@@ -3,12 +3,12 @@
 #include <chipmunk/chipmunk_unsafe.h>
 #include <quickjs.h>
 
-#define countof(x) (sizeof(x)/sizeof((x)[0]))
+/*
+   Items are automatically reclaimed when they go out of scope in your quickjs program.
+   Each chipmunk type's userdata is a pointer to the underlying JSValue it's associated with.
+*/
 
-static JSClassID js_cpspace_class_id;
-static JSClassID js_cpbody_class_id;
-static JSClassID js_cpconstraint_class_id;
-static JSClassID js_cpshape_class_id;
+#define countof(x) (sizeof(x)/sizeof((x)[0]))
 
 #define FNSIG (JSContext *js, JSValueConst this_val, int argc, JSValue *argv)
 #define GETSIG (JSContext *js, JSValueConst this_val)
@@ -16,17 +16,25 @@ static JSClassID js_cpshape_class_id;
 
 #define CPCLASS(TYPE) \
 static JSClassID js_##TYPE##_class_id; \
+static void js_##TYPE##_finalizer(JSRuntime *rt, JSValue val) { \
+  TYPE *cp = JS_GetOpaque(val, js_##TYPE##_class_id); \
+  free(TYPE##GetUserData(cp)); \
+} \
 static inline TYPE *js2##TYPE(JSContext *js, JSValue v) { \
   return JS_GetOpaque(v, js_##TYPE##_class_id); \
 } \
 static inline JSValue TYPE##2js(JSContext *js, TYPE *cp) { \
   return JS_DupValue(js, *(JSValue*)TYPE##GetUserData(cp)); \
 } \
+static JSClassDef js_##TYPE##_class = { \
+  #TYPE, \
+  .finalizer = js_##TYPE##_finalizer \
+}; \
 
-CPCLASS(cpBody)
-CPCLASS(cpSpace)
-CPCLASS(cpConstraint)
 CPCLASS(cpShape)
+CPCLASS(cpSpace)
+CPCLASS(cpBody)
+CPCLASS(cpConstraint)
 
 static JSValue js_gear;
 static JSValue js_pin;
@@ -77,131 +85,52 @@ static inline double js2number(JSContext *js, JSValue v) {
   return number;
 }
 
-static void js_space_finalizer(JSRuntime *rt, JSValue val) {
-  cpSpace *space = JS_GetOpaque(val, js_cpspace_class_id);
-  if (space) {
-    cpSpaceFree(space);
-  }
-}
-
 ////// CP SPACE ///////
 
-static JSClassDef js_space_class = {
-  "Space",
-  .finalizer = js_space_finalizer
-};
+#define CP_GETSET(CP, ENTRY, TYPE) \
+static JSValue js_##CP##_set_##ENTRY (JSContext *js, JSValueConst this_val, JSValue val) { \
+  CP *cp = js2##CP(js, this_val); \
+  if (!cp) return JS_EXCEPTION; \
+  CP##Set##ENTRY(cp, js2##TYPE(js, val)); \
+  return JS_UNDEFINED; \
+} \
+static JSValue js_##CP##_get_##ENTRY (JSContext *js, JSValueConst this_val) { \
+  CP *cp = js2##CP(js, this_val); \
+  if (!cp) return JS_EXCEPTION; \
+  return TYPE##2js(js, CP##Get##ENTRY(cp)); \
+} \
 
-static JSValue js_make_space(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue js_make_cpSpace(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
   cpSpace *space = cpSpaceNew();
-  JSValue obj = JS_NewObjectClass(js, js_cpspace_class_id);
+  JSValue obj = JS_NewObjectClass(js, js_cpSpace_class_id);
   JS_SetOpaque(obj, space);
+  JSValue *cb = malloc(sizeof(*cb));
+  *cb = obj;
+  cpSpaceSetUserData(space, cb);
+  
   return obj;
 }
 
-static JSValue js_space_set_gravity SETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  JSValue vec_obj = val;
-  cpVect gravity = js2cpvect(js, val);
-  cpSpaceSetGravity(space, gravity);
-  return JS_UNDEFINED;
-}
+CP_GETSET(cpSpace, Gravity, cpvect)
+CP_GETSET(cpSpace, Iterations, number)
+CP_GETSET(cpSpace, IdleSpeedThreshold, number)
+CP_GETSET(cpSpace, SleepTimeThreshold, number)
+CP_GETSET(cpSpace, CollisionSlop, number)
+CP_GETSET(cpSpace, CollisionBias, number)
+CP_GETSET(cpSpace, CollisionPersistence, number)
 
-static JSValue js_space_get_gravity GETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  cpVect gravity = cpSpaceGetGravity(space);
-  return cpvect2js(js, gravity);
-}
+struct contextfn {
+  JSContext *js;
+  JSValue fn;
+};
 
-static JSValue js_space_get_iterations GETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  int iterations = cpSpaceGetIterations(space);
-  return JS_NewInt32(js, iterations);
-}
-
-static JSValue js_space_set_iterations SETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  int iterations;
-  if (JS_ToInt32(js, &iterations, val)) {
-    return JS_EXCEPTION;
-  }
-  cpSpaceSetIterations(space, iterations);
-  return JS_UNDEFINED;
-}
-
-static JSValue js_space_get_idle_speed GETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  cpFloat idle_speed = cpSpaceGetIdleSpeedThreshold(space);
-  return JS_NewFloat64(js, idle_speed);
-}
-
-static JSValue js_space_set_idle_speed SETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  double idle_speed = js2number(js, val);
-  cpSpaceSetIdleSpeedThreshold(space, idle_speed);
-  return JS_UNDEFINED;
-}
-
-static JSValue js_space_get_sleep_time GETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  cpFloat sleep_time = cpSpaceGetSleepTimeThreshold(space);
-  return JS_NewFloat64(js, sleep_time);
-}
-
-static JSValue js_space_set_sleep_time SETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  double sleep_time = js2number(js, val);
-  cpSpaceSetSleepTimeThreshold(space, sleep_time);
-  return JS_UNDEFINED;
-}
-
-static JSValue js_space_get_collision_slop GETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  cpFloat collision_slop = cpSpaceGetCollisionSlop(space);
-  return JS_NewFloat64(js, collision_slop);
-}
-
-static JSValue js_space_set_collision_slop SETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  double collision_slop = js2number(js, val);
-  cpSpaceSetCollisionSlop(space, collision_slop);
-  return JS_UNDEFINED;
-}
-
-static JSValue js_space_get_collision_bias GETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  cpFloat collision_bias = cpSpaceGetCollisionBias(space);
-  return JS_NewFloat64(js, collision_bias);
-}
-
-static JSValue js_space_set_collision_bias SETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  double collision_bias = js2number(js, val);
-  cpSpaceSetCollisionBias(space, collision_bias);
-  return JS_UNDEFINED;
-}
-static JSValue js_space_get_collision_persistence GETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  unsigned int collision_persistence = cpSpaceGetCollisionPersistence(space);
-  return JS_NewUint32(js, collision_persistence);
-}
-
-static JSValue js_space_set_collision_persistence SETSIG {
-  cpSpace *space = js2cpSpace(js, this_val);
-  uint32_t collision_persistence;
-  if (JS_ToUint32(js, &collision_persistence, val)) {
-    return JS_EXCEPTION;
-  }
-  cpSpaceSetCollisionPersistence(space, collision_persistence);
-  return JS_UNDEFINED;
-}
+typedef struct contextfn ctxfn;
 
 static void each_body_callback(cpBody *body, void *data) {
-  JSContext *js = (JSContext *)data;
-  JSValue callback = *(JSValue *)data;
-//  JSValue arg = cpbody2js(js, body); // Assuming cpbody2js converts cpBody to a JS object.
-
-//  JS_Call(js, callback, JS_UNDEFINED, 1, &arg);
-//  JS_FreeValue(js, arg);
+  struct contextfn *pass = (struct contextfn*)data;
+  JSValue arg = cpBody2js(pass->js, body);
+  JS_Call(pass->js, pass->fn, JS_UNDEFINED, 1, &arg);
+  JS_FreeValue(pass->js, arg);
 }
 
 static JSValue js_space_each_body(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -211,20 +140,20 @@ static JSValue js_space_each_body(JSContext *js, JSValueConst this_val, int argc
     return JS_ThrowTypeError(js, "Expected a function");
   }
 
-  JSValue callback = JS_DupValue(js, argv[0]);
-  cpSpaceEachBody(space, each_body_callback, &callback);
-  JS_FreeValue(js, callback);
+  struct contextfn pass;
+  pass.js = js;
+  pass.fn = JS_DupValue(js, argv[0]);
+  cpSpaceEachBody(space, each_body_callback, &pass);
+  JS_FreeValue(js, pass.fn);
 
   return JS_UNDEFINED;
 }
 
 static void each_shape_callback(cpShape *shape, void *data) {
-  JSContext *js = (JSContext *)data;
-  JSValue callback = *(JSValue *)data;
-//  JSValue arg = cpshape2js(js, shape); // Assuming cpshape2js converts cpShape to a JS object.
-
-//  JS_Call(js, callback, JS_UNDEFINED, 1, &arg);
-//  JS_FreeValue(js, arg);
+  ctxfn *pass = (ctxfn *)data;
+  JSValue arg = cpShape2js(pass->js, shape);
+  JS_Call(pass->js, pass->fn, JS_UNDEFINED, 1, &arg);
+  JS_FreeValue(pass->js, arg);
 }
 
 static JSValue js_space_each_shape(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -234,20 +163,20 @@ static JSValue js_space_each_shape(JSContext *js, JSValueConst this_val, int arg
     return JS_ThrowTypeError(js, "Expected a function");
   }
 
-  JSValue callback = JS_DupValue(js, argv[0]);
-  cpSpaceEachShape(space, each_shape_callback, &callback);
-  JS_FreeValue(js, callback);
+  ctxfn pass;
+  pass.js = js;
+  pass.fn = JS_DupValue(js, argv[0]);
+  cpSpaceEachShape(space, each_shape_callback, &pass);
+  JS_FreeValue(js, pass.fn);
 
   return JS_UNDEFINED;
 }
 
 static void each_constraint_callback(cpConstraint *constraint, void *data) {
-  JSContext *js = (JSContext *)data;
-  JSValue callback = *(JSValue *)data;
-//  JSValue arg = cpconstraint2js(js, constraint); // Assuming cpconstraint2js converts cpConstraint to a JS object.
-
-//  JS_Call(js, callback, JS_UNDEFINED, 1, &arg);
-//  JS_FreeValue(js, arg);
+  ctxfn *pass = (ctxfn*)data;
+  JSValue arg = cpConstraint2js(pass->js, constraint);
+  JS_Call(pass->js, pass->fn, JS_UNDEFINED, 1, &arg);
+  JS_FreeValue(pass->js, arg);
 }
 
 static JSValue js_space_each_constraint(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -257,32 +186,48 @@ static JSValue js_space_each_constraint(JSContext *js, JSValueConst this_val, in
     return JS_ThrowTypeError(js, "Expected a function");
   }
 
-  JSValue callback = JS_DupValue(js, argv[0]);
-  cpSpaceEachConstraint(space, each_constraint_callback, &callback);
-  JS_FreeValue(js, callback);
+  ctxfn pass;
+  pass.js = js;
+  pass.fn = JS_DupValue(js, argv[0]);
+  cpSpaceEachConstraint(space, each_constraint_callback, &pass);
+  JS_FreeValue(js, pass.fn);
 
   return JS_UNDEFINED;
 }
 
 static JSValue js_space_step FNSIG {
   cpSpace *space = js2cpSpace(js, this_val);
+  cpSpaceStep(space, js2number(js, argv[0]));
   return JS_UNDEFINED;
 }
 
-static const JSCFunctionListEntry js_space_funcs[] = {
+static JSValue js_cpSpace_add_body FNSIG {
+  cpSpace *space = js2cpSpace(js, this_val);
+  JS_DupValue(js, this_val); // Will be unduped when the body is freed
+  cpBody *body = cpBodyNewStatic();
+  JSValue obj = JS_NewObjectClass(js, js_cpBody_class_id);
+  JS_SetOpaque(obj, body);
+  JSValue *cb = malloc(sizeof(*cb));
+  *cb = obj;
+  cpBodySetUserData(body, cb);
+  cpSpaceAddBody(space, body);
+  return obj;
+}
+
+static const JSCFunctionListEntry js_cpSpace_funcs[] = {
+  JS_CFUNC_DEF("add_body", 0, js_cpSpace_add_body),
   JS_CFUNC_DEF("step", 1, js_space_step),
-  JS_CGETSET_DEF("gravity", js_space_get_gravity, js_space_set_gravity),
-  JS_CGETSET_DEF("iterations", js_space_get_iterations, js_space_set_iterations),
+  JS_CGETSET_DEF("gravity", js_cpSpace_get_Gravity, js_cpSpace_set_Gravity),
+  JS_CGETSET_DEF("iterations", js_cpSpace_get_Iterations, js_cpSpace_set_Iterations),
   JS_CFUNC_DEF("eachBody", 1, js_space_each_body),
   JS_CFUNC_DEF("eachShape", 1, js_space_each_shape),
   JS_CFUNC_DEF("eachConstraint", 1, js_space_each_constraint),
-  JS_CGETSET_DEF("idle_speed", js_space_get_idle_speed, js_space_set_idle_speed),
-  JS_CGETSET_DEF("sleep_time", js_space_get_sleep_time, js_space_set_sleep_time),
-  JS_CGETSET_DEF("collision_slop", js_space_get_collision_slop, js_space_set_collision_slop),
-  JS_CGETSET_DEF("collision_bias", js_space_get_collision_bias, js_space_set_collision_bias),
-  JS_CGETSET_DEF("collision_persistence", js_space_get_collision_persistence, js_space_set_collision_persistence),
+  JS_CGETSET_DEF("idle_speed", js_cpSpace_get_IdleSpeedThreshold, js_cpSpace_set_IdleSpeedThreshold),
+  JS_CGETSET_DEF("sleep_time", js_cpSpace_get_SleepTimeThreshold, js_cpSpace_set_SleepTimeThreshold),
+  JS_CGETSET_DEF("collision_slop", js_cpSpace_get_CollisionSlop, js_cpSpace_set_CollisionSlop),
+  JS_CGETSET_DEF("collision_bias", js_cpSpace_get_CollisionBias, js_cpSpace_set_CollisionBias),
+  JS_CGETSET_DEF("collision_persistence", js_cpSpace_get_CollisionPersistence, js_cpSpace_set_CollisionPersistence),
 };
-
 
 ////// CPBODY ///////
 
@@ -359,7 +304,7 @@ static JSValue js_body_sleep(JSContext *js, JSValueConst this_val, int argc, JSV
 
 static JSValue js_body_activate_static(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
   cpBody *body = js2cpBody(js, this_val); if (!body) return JS_EXCEPTION;
-  cpShape *filter = JS_IsUndefined(argv[0]) ? NULL : JS_GetOpaque(argv[0], js_cpshape_class_id);
+  cpShape *filter = JS_IsUndefined(argv[0]) ? NULL : JS_GetOpaque(argv[0], js_cpShape_class_id);
   cpBodyActivateStatic(body, filter);
   return JS_UNDEFINED;
 }
@@ -371,40 +316,52 @@ static JSValue js_body_sleep_with_group(JSContext *js, JSValueConst this_val, in
   return JS_UNDEFINED;
 }
 
-void body_shape_fn(cpBody *body, cpShape *shape, JSValue *fn) {
-  JSValue v = *(JSValue*)cpShapeGetUserData(shape);
-//  JS_Call(js, *fn, JS_UNDEFINED, 1, &v);
+void body_shape_fn(cpBody *body, cpShape *shape, void *data) {
+  ctxfn *pass = data;
+  JSValue v = cpShape2js(pass->js, shape);
+  JS_Call(pass->js, pass->fn, JS_UNDEFINED, 1, &v);
+  JS_FreeValue(pass->js,v);
 }
 
 static JSValue js_body_each_shape(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
   cpBody *body = js2cpBody(js, this_val); if (!body) return JS_EXCEPTION;
-  //cpBodyEachShape(body, body_shape_fn, &argv[0]);
+  ctxfn pass;
+  pass.js = js;
+  pass.fn = JS_DupValue(js, argv[0]);
+  cpBodyEachShape(body, body_shape_fn, &pass);
+  JS_FreeValue(js, argv[0]);
   return JS_UNDEFINED;
 }
 
-void body_constraint_fn(cpBody *body, cpConstraint *constraint, JSValue *fn) {
-  JSValue v = *(JSValue*)cpConstraintGetUserData(constraint);
-//  JS_Call(js, *fn, JS_UNDEFINED, 1, &v);
+void body_constraint_fn(cpBody *body, cpConstraint *constraint, void *data) {
+  ctxfn *pass = data;
+  JSValue v = cpConstraint2js(pass->js, constraint);
+  JS_Call(pass->js, pass->fn, JS_UNDEFINED, 1, &v);
+  JS_FreeValue(pass->js, v);
 }
 
 static JSValue js_body_each_constraint(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
   cpBody *body = js2cpBody(js, this_val); if (!body) return JS_EXCEPTION;
-  //cpBodyEachConstraint(body, body_constraint_fn, &argv[0]);
+  ctxfn pass;
+  pass.js = js;
+  pass.fn = JS_DupValue(js, argv[0]);
+  cpBodyEachConstraint(body, body_constraint_fn, &pass);
+  JS_FreeValue(js, argv[0]);
   return JS_UNDEFINED;
 }
 
-void body_arbiter_fn(cpBody *body, cpArbiter *arbiter, JSValue *fn) {
-  JSValue v = *(JSValue*)cpArbiterGetUserData(arbiter);
+void body_arbiter_fn(cpBody *body, cpArbiter *arbiter, ctxfn *pass) {
+//  JSValue v = ue*)cpArbiterGetUserData(arbiter);
 //  JS_Call(js, *fn, JS_UNDEFINED, 1, &v);
 }
 
 static JSValue js_body_each_arbiter(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
-  cpBody *body = js2cpBody(js, this_val); if (!body) return JS_EXCEPTION;
+//  cpBody *body = js2cpBody(js, this_val); if (!body) return JS_EXCEPTION;
 //  cpBodyEachArbiter(body, body_arbiter_fn, &argv[0]);
   return JS_UNDEFINED;
 }
 
-static const JSCFunctionListEntry js_body_funcs[] = {
+static const JSCFunctionListEntry js_cpBody_funcs[] = {
   JS_CGETSET_DEF("position", js_body_get_Position, js_body_set_Position),
   JS_CGETSET_DEF("angle", js_body_get_Angle, js_body_set_Angle),
   JS_CGETSET_DEF("velocity", js_body_get_Velocity, js_body_set_Velocity),
@@ -438,7 +395,7 @@ static JSValue poly_proto;
 static JSValue js_body_add_circle_shape(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
   cpBody *body = js2cpBody(js, this_val); if (!body) return JS_EXCEPTION;
   cpShape *shape = cpCircleShapeNew(body, js2number(js, argv[0]), js2cpvect(js, argv[1]));
-  JSValue obj = JS_NewObjectClass(js, js_cpshape_class_id);
+  JSValue obj = JS_NewObjectClass(js, js_cpShape_class_id);
   JS_SetOpaque(obj, shape);
   JS_SetPrototype(js, obj, circle_proto);
   return obj;
@@ -450,7 +407,7 @@ static JSValue js_body_add_segment_shape(JSContext *js, JSValueConst this_val, i
   cpVect b = js2cpvect(js,argv[1]);
   double radius = js2number(js, argv[2]);
   cpShape *shape = cpSegmentShapeNew(body, a, b, radius);
-  JSValue obj = JS_NewObjectClass(js, js_cpshape_class_id);
+  JSValue obj = JS_NewObjectClass(js, js_cpShape_class_id);
   JS_SetOpaque(obj, shape);
   JS_SetPrototype(js, obj, segment_proto);
   return obj;
@@ -461,73 +418,50 @@ static JSValue js_body_add_poly_shape(JSContext *js, JSValueConst this_val, int 
   int count = js2number(js, argv[0]);
   cpVect verts[1];
   //cpVect *verts = js2cpvect_array(argv[1], count);
-  cpVect offset = js2cpvect(js,argv[2]);
   cpTransform T = {0};
   cpShape *shape = cpPolyShapeNew(body, count, verts, T, 0.0);
-  JSValue obj = JS_NewObjectClass(js, js_cpshape_class_id);
+  JSValue obj = JS_NewObjectClass(js, js_cpShape_class_id);
   JS_SetOpaque(obj, shape);
   JS_SetPrototype(js, obj, poly_proto);
   return obj;
 }
 
-static JSValue js_circle2d_set_radius(JSContext *js, JSValueConst this_val, JSValue val) {
-  cpCircleShape *shape = (cpCircleShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  cpCircleShapeSetRadius(shape, js2number(js,val));
-  return JS_UNDEFINED;
-}
+#define SHAPE_GETSET(SHAPE, ENTRY, TYPE) \
+static JSValue js_##SHAPE##_set_##ENTRY (JSContext *js, JSValueConst this_val, JSValue val) { \
+  cpShape *shape = js2cpShape(js, this_val); \
+  if (!shape) return JS_EXCEPTION; \
+  SHAPE##Set##ENTRY(shape, js2##TYPE(js, val)); \
+  return JS_UNDEFINED; \
+} \
+static JSValue js_##SHAPE##_get_##ENTRY (JSContext *js, JSValueConst this_val) { \
+  cpShape *shape = js2cpShape(js, this_val); \
+  if (!shape) return JS_EXCEPTION; \
+  return TYPE##2js(js, SHAPE##Get##ENTRY(shape)); \
+} \
 
-static JSValue js_circle2d_get_radius(JSContext *js, JSValueConst this_val) {
-  cpCircleShape *shape = (cpCircleShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  return JS_NewFloat64(js, cpCircleShapeGetRadius(shape));
-}
+SHAPE_GETSET(cpCircleShape, Radius, number)
+SHAPE_GETSET(cpCircleShape, Offset, cpvect)
 
-static JSValue js_circle2d_set_offset(JSContext *js, JSValueConst this_val, JSValue val) {
-  cpCircleShape *shape = (cpCircleShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  cpCircleShapeSetOffset(shape, js2cpvect(js, val));
-  return JS_UNDEFINED;
-}
-
-static JSValue js_circle2d_get_offset(JSContext *js, JSValueConst this_val) {
-  cpCircleShape *shape = (cpCircleShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  return cpvect2js(js, cpCircleShapeGetOffset(shape));
-}
-
-static const JSCFunctionListEntry js_circle2d_funcs[] = {
-  JS_CGETSET_DEF("radius", js_circle2d_get_radius, js_circle2d_set_radius),
-  JS_CGETSET_DEF("offset", js_circle2d_get_offset, js_circle2d_set_offset)
+static const JSCFunctionListEntry js_cpCircleShape_funcs[] = {
+  JS_CGETSET_DEF("radius", js_cpCircleShape_get_Radius, js_cpCircleShape_set_Radius),
+  JS_CGETSET_DEF("offset", js_cpCircleShape_get_Offset, js_cpCircleShape_set_Offset)
 };
 
-static JSValue js_seg2d_set_endpoints(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
-  cpSegmentShape *shape = (cpSegmentShape *)js2cpShape(js, this_val);
+SHAPE_GETSET(cpSegmentShape, Radius, number)
+static JSValue js_cpSegmentShape_set_endpoints(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
+  cpShape *shape = js2cpShape(js, this_val);
   if (!shape) return JS_EXCEPTION;
   cpSegmentShapeSetEndpoints(shape, js2cpvect(js, argv[0]), js2cpvect(js, argv[1]));
   return JS_UNDEFINED;
 }
-
-static JSValue js_seg2d_set_radius(JSContext *js, JSValueConst this_val, JSValue val) {
-  cpSegmentShape *shape = (cpSegmentShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  cpSegmentShapeSetRadius(shape, js2number(js,val));
-  return JS_UNDEFINED;
-}
-
-static JSValue js_seg2d_get_radius(JSContext *js, JSValueConst this_val) {
-  cpSegmentShape *shape = (cpSegmentShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  return JS_NewFloat64(js, cpSegmentShapeGetRadius(shape));
-}
-
-static const JSCFunctionListEntry js_seg2d_funcs[] = {
-  JS_CFUNC_DEF("setEndpoints", 2, js_seg2d_set_endpoints),
-  JS_CGETSET_DEF("radius", js_seg2d_get_radius, js_seg2d_set_radius)
+static const JSCFunctionListEntry js_cpSegmentShape_funcs[] = {
+  JS_CFUNC_DEF("setEndpoints", 2, js_cpSegmentShape_set_endpoints),
+  JS_CGETSET_DEF("radius", js_cpSegmentShape_get_Radius, js_cpSegmentShape_set_Radius)
 };
 
-static JSValue js_poly2d_set_verts(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
-  cpPolyShape *shape = (cpPolyShape *)js2cpShape(js, this_val);
+SHAPE_GETSET(cpPolyShape, Radius, number)
+static JSValue js_cpPolyShape_set_verts(JSContext *js, JSValueConst this_val, int argc, JSValueConst *argv) {
+  cpShape *shape = js2cpShape(js, this_val);
   if (!shape) return JS_EXCEPTION;
   int count = js2number(js, argv[0]);
 //  cpVect *verts = js2cpvect_array(argv[1], count);
@@ -536,22 +470,9 @@ static JSValue js_poly2d_set_verts(JSContext *js, JSValueConst this_val, int arg
   return JS_UNDEFINED;
 }
 
-static JSValue js_poly2d_set_radius(JSContext *js, JSValueConst this_val, JSValue val) {
-  cpPolyShape *shape = (cpPolyShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  cpPolyShapeSetRadius(shape, js2number(js,val));
-  return JS_UNDEFINED;
-}
-
-static JSValue js_poly2d_get_radius(JSContext *js, JSValueConst this_val) {
-  cpPolyShape *shape = (cpPolyShape *)js2cpShape(js, this_val);
-  if (!shape) return JS_EXCEPTION;
-  return JS_NewFloat64(js, cpPolyShapeGetRadius(shape));
-}
-
-static const JSCFunctionListEntry js_poly2d_funcs[] = {
-  JS_CFUNC_DEF("setVerts", 2, js_poly2d_set_verts),
-  JS_CGETSET_DEF("radius", js_poly2d_get_radius, js_poly2d_set_radius)
+static const JSCFunctionListEntry js_cpPolyShape_funcs[] = {
+  JS_CFUNC_DEF("setVerts", 2, js_cpPolyShape_set_verts),
+  JS_CGETSET_DEF("radius", js_cpPolyShape_get_Radius, js_cpPolyShape_set_Radius)
 };
 
 ////// CPSHAPE //////
@@ -654,7 +575,7 @@ static JSValue js_shape_get_filter(JSContext *js, JSValueConst this_val) {
   return obj;
 }
 
-static const JSCFunctionListEntry js_cpshape_funcs[] = {
+static const JSCFunctionListEntry js_cpShape_funcs[] = {
   JS_CGETSET_DEF("collisionType", js_shape_get_collision_type, js_shape_set_collision_type),
   JS_CFUNC_DEF("getBB", 0, js_shape_get_bb),
   JS_CGETSET_DEF("sensor", js_shape_get_sensor, js_shape_set_sensor),
@@ -662,10 +583,6 @@ static const JSCFunctionListEntry js_cpshape_funcs[] = {
   JS_CGETSET_DEF("friction", js_shape_get_friction, js_shape_set_friction),
   JS_CGETSET_DEF("surfaceVelocity", js_shape_get_surface_velocity, js_shape_set_surface_velocity),
   JS_CGETSET_DEF("filter", js_shape_get_filter, js_shape_set_filter)
-};
-
-static JSClassDef js_shape_class = {
-  "Shape"
 };
 
 ////////////////// JOINTS ///
@@ -912,47 +829,50 @@ js_##NAME = JS_NewObject(js); \
 JS_SetPropertyFunctionList(js, js_##NAME, js_##NAME##_funcs, countof(js_##NAME##_funcs)); \
 JS_SetPrototype(js, js_##NAME, PARENT); \
 
+#define INITCLASS(TYPE) \
+JS_NewClassID(&js_##TYPE##_class_id); \
+JS_NewClass(JS_GetRuntime(js), js_##TYPE##_class_id, &js_##TYPE##_class); \
+JSValue TYPE##_proto = JS_NewObject(js); \
+JS_SetPropertyFunctionList(js, TYPE##_proto, js_##TYPE##_funcs, countof(js_##TYPE##_funcs)); \
+JS_SetClassProto(js, js_##TYPE##_class_id, TYPE##_proto); \
+
+#define SUBCLASS(TYPE, PROTO) \
+JSValue TYPE##_proto = JS_NewObject(js); \
+JS_SetPropertyFunctionList(js, TYPE##_proto, js_##TYPE##_funcs, countof(js_##TYPE##_funcs)); \
+JS_SetPrototype(js, TYPE##_proto, PROTO); \
+
 static int js_init_module(JSContext *js, JSModuleDef *m) {
-  JS_NewClassID(&js_cpspace_class_id);
-  JS_NewClassID(&js_cpbody_class_id);
-  JS_NewClassID(&js_cpshape_class_id);
-
-  JS_NewClass(JS_GetRuntime(js), js_cpspace_class_id, &js_space_class);
-  JS_NewClass(JS_GetRuntime(js), js_cpbody_class_id, &js_space_class);
-  JS_NewClass(JS_GetRuntime(js), js_cpshape_class_id, &js_shape_class);
-
-  JSValue shape_proto = JS_NewObject(js);
-  JS_SetPropertyFunctionList(js, shape_proto, js_cpshape_funcs, countof(js_cpshape_funcs));
-  JS_SetClassProto(js, js_cpshape_class_id, shape_proto);
+  INITCLASS(cpSpace)
+  INITCLASS(cpBody)
+  INITCLASS(cpShape)
+  INITCLASS(cpConstraint)
   
   circle_proto = JS_NewObject(js);
-  JS_SetPropertyFunctionList(js, circle_proto, js_circle2d_funcs, countof(js_circle2d_funcs));
-  JS_SetPrototype(js, circle_proto, shape_proto);
+  JS_SetPropertyFunctionList(js, circle_proto, js_cpCircleShape_funcs, countof(js_cpCircleShape_funcs));
+  JS_SetPrototype(js, circle_proto, cpShape_proto);
   
   segment_proto = JS_NewObject(js);
-  JS_SetPropertyFunctionList(js, segment_proto, js_seg2d_funcs, countof(js_seg2d_funcs));
-  JS_SetPrototype(js, segment_proto, shape_proto);
+  JS_SetPropertyFunctionList(js, segment_proto, js_cpSegmentShape_funcs, countof(js_cpSegmentShape_funcs));
+  JS_SetPrototype(js, segment_proto, cpShape_proto);
   
   poly_proto = JS_NewObject(js);
-  JS_SetPropertyFunctionList(js, poly_proto, js_poly2d_funcs, countof(js_poly2d_funcs));
-  JS_SetPrototype(js, poly_proto, shape_proto);
+  JS_SetPropertyFunctionList(js, poly_proto, js_cpPolyShape_funcs, countof(js_cpPolyShape_funcs));
+  JS_SetPrototype(js, poly_proto, cpShape_proto);
 
-  JSValue space_proto = JS_NewObject(js);
-  JS_SetPropertyFunctionList(js, space_proto, js_body_funcs, countof(js_body_funcs));
-  
-  /*JSSTATIC(pin, cpConstraint_proto)
-  JSSTATIC(motor, cpConstraint_proto)
-  JSSTATIC(ratchet, cpConstraint_proto)
-  JSSTATIC(slide, cpConstraint_proto)
-  JSSTATIC(pivot, cpConstraint_proto)
-  JSSTATIC(gear, cpConstraint_proto)
-  JSSTATIC(rotary, cpConstraint_proto)
-  JSSTATIC(damped_rotary, cpConstraint_proto)
-  JSSTATIC(damped_spring, cpConstraint_proto)
-  JSSTATIC(groove, cpConstraint_proto)*/
+  SUBCLASS(pin, cpConstraint_proto)
+  SUBCLASS(motor, cpConstraint_proto)
+  SUBCLASS(joint, cpConstraint_proto)  
+  SUBCLASS(ratchet, cpConstraint_proto)
+  SUBCLASS(slide, cpConstraint_proto)
+  SUBCLASS(pivot, cpConstraint_proto)
+  SUBCLASS(gear, cpConstraint_proto)
+  SUBCLASS(rotary, cpConstraint_proto)
+  SUBCLASS(damped_rotary, cpConstraint_proto)
+  SUBCLASS(damped_spring, cpConstraint_proto)
+  SUBCLASS(groove, cpConstraint_proto)
 
-  JSValue cpspace_class = JS_NewCFunction2(js, js_make_space, "Space", 0, JS_CFUNC_constructor, 0);
-  JS_SetClassProto(js, js_cpspace_class_id, space_proto);
+  JSValue cpspace_class = JS_NewCFunction2(js, js_make_cpSpace, "Space", 0, JS_CFUNC_constructor, 0);
+  JS_SetClassProto(js, js_cpSpace_class_id, cpSpace_proto);
   JS_SetModuleExport(js, m, "Space", cpspace_class);
 
   return 0;
