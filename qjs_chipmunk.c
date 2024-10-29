@@ -51,8 +51,16 @@ static inline cpVect js2cpvect(JSContext *js, JSValue v) {
   cpVect ret;
   JSValue x = JS_GetPropertyStr(js, v, "x");
   JSValue y = JS_GetPropertyStr(js, v, "y");
+#if CP_USE_DOUBLES
   JS_ToFloat64(js, &ret.x, x);
   JS_ToFloat64(js, &ret.y, y);
+#else
+  double fx, fy;
+  JS_ToFloat64(js, &fx, x);
+  JS_ToFloat64(js, &fy, y);
+  ret.x = fx;
+  ret.y = fy;
+#endif
   JS_FreeValue(js, x);
   JS_FreeValue(js, y);
   return ret;
@@ -110,6 +118,10 @@ static JSValue js_make_cpSpace(JSContext *js, JSValueConst this_val, int argc, J
   
   return obj;
 }
+
+static const JSCFunctionListEntry js_chipmunk2d_funcs[] = {
+  JS_CFUNC_DEF("make_space", 00, js_make_cpSpace),
+};
 
 CP_GETSET(cpSpace, Gravity, cpvect)
 CP_GETSET(cpSpace, Iterations, number)
@@ -841,7 +853,43 @@ JSValue TYPE##_proto = JS_NewObject(js); \
 JS_SetPropertyFunctionList(js, TYPE##_proto, js_##TYPE##_funcs, countof(js_##TYPE##_funcs)); \
 JS_SetPrototype(js, TYPE##_proto, PROTO); \
 
-static int js_init_module(JSContext *js, JSModuleDef *m) {
+JSValue js_chipmunk2d_use(JSContext *js)
+{
+  INITCLASS(cpSpace)
+  INITCLASS(cpBody)
+  INITCLASS(cpShape)
+  INITCLASS(cpConstraint)
+  
+  circle_proto = JS_NewObject(js);
+  JS_SetPropertyFunctionList(js, circle_proto, js_cpCircleShape_funcs, countof(js_cpCircleShape_funcs));
+  JS_SetPrototype(js, circle_proto, cpShape_proto);
+  
+  segment_proto = JS_NewObject(js);
+  JS_SetPropertyFunctionList(js, segment_proto, js_cpSegmentShape_funcs, countof(js_cpSegmentShape_funcs));
+  JS_SetPrototype(js, segment_proto, cpShape_proto);
+  
+  poly_proto = JS_NewObject(js);
+  JS_SetPropertyFunctionList(js, poly_proto, js_cpPolyShape_funcs, countof(js_cpPolyShape_funcs));
+  JS_SetPrototype(js, poly_proto, cpShape_proto);
+
+  SUBCLASS(pin, cpConstraint_proto)
+  SUBCLASS(motor, cpConstraint_proto)
+  SUBCLASS(joint, cpConstraint_proto)  
+  SUBCLASS(ratchet, cpConstraint_proto)
+  SUBCLASS(slide, cpConstraint_proto)
+  SUBCLASS(pivot, cpConstraint_proto)
+  SUBCLASS(gear, cpConstraint_proto)
+  SUBCLASS(rotary, cpConstraint_proto)
+  SUBCLASS(damped_rotary, cpConstraint_proto)
+  SUBCLASS(damped_spring, cpConstraint_proto)
+  SUBCLASS(groove, cpConstraint_proto)
+
+  JSValue export = JS_NewObject(js);
+  JS_SetPropertyFunctionList(js, export, js_chipmunk2d_funcs, countof(js_chipmunk2d_funcs));
+  return export;
+}
+
+static int js_chipmunk2d_init(JSContext *js, JSModuleDef *m) {
   INITCLASS(cpSpace)
   INITCLASS(cpBody)
   INITCLASS(cpShape)
@@ -886,7 +934,7 @@ static int js_init_module(JSContext *js, JSModuleDef *m) {
 
 JSModuleDef *JS_INIT_MODULE(JSContext *js, const char *name) {
   JSModuleDef *m;
-  m = JS_NewCModule(js, name, js_init_module);
+  m = JS_NewCModule(js, name, js_chipmunk2d_init);
   if (!m)
     return NULL;
   JS_AddModuleExport(js, m, "Space");
