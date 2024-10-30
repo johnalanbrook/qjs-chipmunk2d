@@ -4,7 +4,7 @@ quickjs = dependency('quickjs', static:true)
 chipmunk = dependency('chipmunk', static:true)
 
 libtype = get_option('default_library')
-if libtype == 'static'
+if libtype != 'static'
   add_project_arguments('-DJS_SHARED_LIBRARY', language:'c')
 endif
 

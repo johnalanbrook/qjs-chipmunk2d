@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/johnalanbrook/Chipmunk2D.git
+revision = head
+depth = 1
+
+[provide]
+chipmunk = chipmunk_dep
